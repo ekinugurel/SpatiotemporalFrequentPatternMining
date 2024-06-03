@@ -3,6 +3,7 @@ import math
 import numpy as np
 from pyspark.sql.functions import col, split
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 def extract_times_to_seconds(rdd):
     """
@@ -226,6 +227,70 @@ def K_means_time_and_space(data, centroids, max_iter, norm, lam, gam):
     # return the costs, new centroids, and cluster assignments
     return costs, new_centroids, clusters
 
+def K_means_time_and_space_alt(data, centroids, max_iter, norm, lam, gam, dist_func):
+
+    # The number of seconds in a day (will need later):
+    s = 24 * 60 * 60
+
+    # set the number of iterations for K-means
+    MAX_ITER = max_iter + 1
+
+    # initialize the cost associated with each iteration
+    costs = np.zeros(MAX_ITER)
+
+    # outer-most loop for k-means iterations
+    for t in np.arange(MAX_ITER):
+
+        # will store the index corresponding to the cluster into which each
+        # point is partitioned
+        clusters = np.zeros(data.shape[0])
+
+        # will store the new centroids computed from each iteration
+        new_centroids = np.zeros([centroids.shape[0], centroids.shape[1]])
+
+        # will store the count of the number of points falling into each
+        # cluster
+        point_count = np.zeros([centroids.shape[0], 1])
+
+
+        # loop over each row in the data
+        for j in np.arange(data.shape[0]):
+
+            # will store the custom distance from the current row of the data
+            # to each centroid
+            dists = np.zeros(centroids.shape[0])
+
+
+            # loop over each centroid
+            for i in np.arange(centroids.shape[0]):
+
+              # get the current row, centroid pair
+              x_row = data[j]
+              c_row = centroids[i]
+
+              # calculate distance
+              dists[i] = dist_func(x_row[:5], c_row[:5], lam, gam)
+
+            # determine the (index of the) cluster with the closest centroid
+            # to x_row
+            clusters[j] = np.argmin(dists)
+
+            # add the current x_row to the row in the array of new centroids
+            # corresponding to the cluster x_row falls into
+            new_centroids[int(clusters[j]), :] += x_row
+            point_count[int(clusters[j])] += 1
+
+            # store the cost(s) associated with the current x_row
+            costs[t] += np.power(dists[int(clusters[j])], norm)
+
+        # divide by the number of points in each cluster to obtain the new
+        # centroids
+        new_centroids = new_centroids / point_count
+        centroids = new_centroids
+
+    # return the costs, new centroids, and cluster assignments
+    return costs, new_centroids, clusters
+
 def custom_distance_metric(x_row, c_row, lam, gam):
     """
     Compute the custom distance between a data point and a centroid.
@@ -237,7 +302,6 @@ def custom_distance_metric(x_row, c_row, lam, gam):
     x_start_time = x_row[4]
     c_start_time = c_row[4]
 
-
     # perform the wrap-around, finding the minimum distance in 24-hour
     # time
     dist = lam * np.min([np.abs(x_start_time - c_start_time),
@@ -248,6 +312,8 @@ def custom_distance_metric(x_row, c_row, lam, gam):
 
     return dist
 
+def euclidean_dist(xrow, crow, lam=None, gam=None):
+    return np.linalg.norm(xrow-crow)
 
 def silhouette_score_custom(X, labels, custom_distance, lam, gam):
     """
@@ -286,28 +352,43 @@ def silhouette_score_custom(X, labels, custom_distance, lam, gam):
     overall_silhouette_score = np.mean(silhouette_scores)
     return overall_silhouette_score, silhouette_scores
 
-def cluster_train_test_split(small_time_and_space_arr_pd):
+def cluster_train_test_split(small_time_and_space_arr_pd, cluster_col = "cluster_custom", test_size=0.2, random_state=42):
     """
     Splits the data into train and test sets for each cluster.
     """
     # Get the unique clusters
-    unique_clusters = np.unique(small_time_and_space_arr_pd["cluster"])
+    unique_clusters = np.unique(small_time_and_space_arr_pd[cluster_col])
 
     # Dictionary to store train/test splits for each cluster
     train_test_splits = {}
+    scalers = {}
 
     for cluster in unique_clusters:
         # Filter rows with the current cluster value
-        cluster_data = small_time_and_space_arr_pd[small_time_and_space_arr_pd["cluster"] == cluster]
+        cluster_data = small_time_and_space_arr_pd[small_time_and_space_arr_pd[cluster_col] == cluster]
 
-        X = cluster_data.drop(columns=["cluster", "end_time"])
+        X = cluster_data.drop(columns=[cluster_col, "end_time"])
         y = cluster_data["end_time"]
     
         # Split the data into train and test sets
-        train_x, test_x, train_y, test_y = train_test_split(X, y, test_size=0.2, random_state=42)
+        train_x, test_x, train_y, test_y = train_test_split(X, y, test_size=test_size, random_state=random_state)
+
+        # Normalize the output data
+        scaler_input = StandardScaler()
+        scaler_input.fit(train_x)
+        train_x = scaler_input.transform(train_x)
+        test_x = scaler_input.transform(test_x)
+
+        scaler_output = StandardScaler()
+        scaler_output.fit(train_y.values.reshape(-1, 1))
+        train_y = scaler_output.transform(train_y.values.reshape(-1, 1)).flatten()
+        test_y = scaler_output.transform(test_y.values.reshape(-1, 1)).flatten()
 
         # Store the train/test splits for the current cluster
         train_test_splits[cluster] = (train_x, test_x, train_y, test_y)
+
+        # Store the scalers for the current cluster
+        scalers[cluster] = (scaler_input, scaler_output)
 
         # In this, train_test_splits[0] will contain the splits for cluster 0
         # train_test_splits[0][0] will contain the input training data for cluster 0
@@ -315,5 +396,5 @@ def cluster_train_test_split(small_time_and_space_arr_pd):
         # train_test_splits[0][2] will contain the output training data for cluster 0
         # train_test_splits[0][3] will contain the output testing data for cluster 0
 
-    return train_test_splits
+    return train_test_splits, scalers
 
