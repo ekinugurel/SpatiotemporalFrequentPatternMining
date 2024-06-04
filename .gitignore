@@ -1,5 +1,6 @@
 data/
-
+.DS__Store
+final_recording.mp4
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
