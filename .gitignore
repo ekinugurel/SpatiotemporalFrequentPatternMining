@@ -1,6 +1,10 @@
 data/
 .DS__Store
 final_recording.mp4
+results/
+combined_results.csv
+times.csv
+Archive/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
